@@ -32,10 +32,12 @@ use crate::{
       DesktopAccessory,
       DesktopAction,
       DesktopMember,
+      DesktopTab,
    },
    members::Place,
    shortcuts,
    sidebar,
+   tabs,
    toolbar,
 };
 
@@ -53,6 +55,11 @@ pub struct Desktop<'js> {
    pub actions:        RefCell<Vec<DesktopAction<'js>>>,
    /// Active `phoenix.ui.openPage` button callbacks, keyed by button ID.
    pub page_buttons:   RefCell<HashMap<u64, (u64, String, Function<'js>)>>,
+   /// `phoenix.ui.addSettingsTab` callbacks.
+   pub tabs:           RefCell<Vec<DesktopTab<'js>>>,
+   /// The buttons on settings tabs as last rendered, keyed by button ID, with
+   /// their tab's ID.
+   pub tab_buttons:    RefCell<HashMap<u64, (u64, Function<'js>)>>,
    /// `phoenix.messages.onEmojiPick` handlers by id and plugin. Desktop has
    /// no picker presses to give them, only the unlock they turn on.
    pub emoji_pickers:  RefCell<Vec<(u64, String)>>,
@@ -87,8 +94,9 @@ unsafe impl<'js> JsLifetime<'js> for Desktop<'js> {
 }
 
 /// Drops the accessories, member decorations, context menu actions, open page
-/// callbacks, emoji pick handlers, hidden counts, sidebar collapses, header
-/// buttons and shortcuts `name` registered and redraws Discord without them.
+/// callbacks, settings tabs, emoji pick handlers, hidden counts, sidebar
+/// collapses, header buttons and shortcuts `name` registered and redraws
+/// Discord without them.
 pub fn unload(ctx: &Ctx<'_>, name: &str) {
    let Some(registry) = ctx.userdata::<Desktop<'_>>() else {
       return;
@@ -127,6 +135,22 @@ pub fn unload(ctx: &Ctx<'_>, name: &str) {
       .page_buttons
       .borrow_mut()
       .retain(|_, (_, plugin, _)| plugin != name);
+
+   let mut tab_list = registry.tabs.borrow_mut();
+   let gone: Vec<u64> = tab_list
+      .iter()
+      .filter(|tab| tab.plugin == name)
+      .map(|tab| tab.id)
+      .collect();
+   tab_list.retain(|tab| tab.plugin != name);
+   drop(tab_list);
+   registry
+      .tab_buttons
+      .borrow_mut()
+      .retain(|_, (tab, _)| !gone.contains(tab));
+   if tabs::remove_plugin(name) {
+      crate::modal::force_redraw();
+   }
 
    let mut pickers = registry.emoji_pickers.borrow_mut();
    pickers.retain(|(_, plugin)| plugin != name);

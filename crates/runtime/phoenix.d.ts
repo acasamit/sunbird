@@ -1309,6 +1309,23 @@ declare namespace Phoenix {
     onPress?(): void;
   }
 
+  /// A button on a settings tab. `danger` wins over `primary`.
+  interface SettingsButton {
+    label: string;
+    primary?: boolean;
+    danger?: boolean;
+    onPress(): void;
+  }
+
+  /// What a settings tab shows, top to bottom. Action rows that follow each other share a card.
+  type SettingsBlock =
+    | { type: "text"; title?: string; text: string }
+    /// A row with a title and a description, and a button on its right.
+    | ({ type: "action"; title: string; description?: string } & SettingsButton)
+    /// At most 8 buttons side by side.
+    | { type: "buttons"; buttons: SettingsButton[] }
+    | { type: "divider" };
+
   /// What a profile tab shows, top to bottom. Colors follow the profile's theme.
   type ProfileBlock =
     /// A paragraph, with an optional heading above it.
@@ -1449,6 +1466,13 @@ declare namespace Phoenix {
       title: string;
       priority?: number;
       render(ctx: ProfileContext): ProfileBlock[] | Promise<ProfileBlock[]>;
+    }): Remover;
+    /// A tab of its own on the Sunbird settings page, after Sunbird's tabs. `render` runs when
+    /// the tab is added, when it is picked, after one of its buttons is pressed and on
+    /// `update()`, and the tab shows what it returned last. Desktop only, absent elsewhere.
+    addSettingsTab?(options: {
+      title: string;
+      render(): SettingsBlock[] | Promise<SettingsBlock[]>;
     }): Remover;
     /// Without `message`: a bottom sheet of `options` like Discord's message menu (a plain list
     /// dialog until that menu has been opened once). An option's `icon` is a drawable, or the

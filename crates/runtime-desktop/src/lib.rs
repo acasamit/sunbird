@@ -34,6 +34,7 @@ mod settings;
 mod shortcuts;
 mod sidebar;
 mod staff;
+mod tabs;
 mod theme_css;
 mod toolbar;
 
