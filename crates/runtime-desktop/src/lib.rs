@@ -27,6 +27,7 @@ mod js;
 mod members;
 mod message;
 mod modal;
+mod notices;
 mod os;
 #[cfg(windows)]
 mod restart;
