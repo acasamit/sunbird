@@ -1330,8 +1330,9 @@ fn inline_row(b: &Builder, pieces: &[Piece], font_px: f32) -> RawDiv {
 }
 
 /// Adds `pieces` as one more child of a `Div` Discord built by value, like the
-/// member name's row right after the name.
-pub fn append_pieces(div: *mut c_void, pieces: &[Piece]) -> bool {
+/// member name's row right after the name, `lead` pixels after the child
+/// before them.
+pub fn append_pieces(div: *mut c_void, pieces: &[Piece], lead: f32) -> bool {
    let Some(sym) = SYMBOLS.get() else {
       return false;
    };
@@ -1342,7 +1343,10 @@ pub fn append_pieces(div: *mut c_void, pieces: &[Piece]) -> bool {
       return false;
    }
    let b = Builder { sym };
-   let row = inline_row(&b, pieces, 13.0);
+   let mut row = inline_row(&b, pieces, 13.0);
+   if lead > 0.0 {
+      b.style_div(&mut row, |s| s.length(s.at.padding[3], gpui_px(lead)));
+   }
    let mut any = MaybeUninit::<RawAnyElement>::uninit();
    b.write_any(row, any.as_mut_ptr());
    // SAFETY: `div` is a live `Div` that `Div::child` just returned, whose

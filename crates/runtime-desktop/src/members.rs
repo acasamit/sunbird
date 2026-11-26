@@ -262,9 +262,13 @@ unsafe extern "C" fn dm_child_detour(
       }
       slot(&DM_USER)
    };
-   decorate(row, user_id);
+   decorate(row, user_id, DM_LEAD);
    row
 }
+
+/// The member row spaces its children 4 px apart and the DM row's name box
+/// does not, so DM decorations add that space themselves.
+const DM_LEAD: f32 = 4.0;
 
 /// Points the calls adding the member's name to its row at
 /// [`name_child_detour`], so decorations follow the name inside that row. The
@@ -326,17 +330,18 @@ unsafe extern "C" fn name_child_detour(
       }
       id.read_unaligned()
    };
-   decorate(row, user_id);
+   decorate(row, user_id, 0.0);
    row
 }
 
-/// Appends what the member decorations drew for `user_id` to `row`.
-fn decorate(row: *mut c_void, user_id: u64) {
+/// Appends what the member decorations drew for `user_id` to `row`, `lead`
+/// pixels after the name.
+fn decorate(row: *mut c_void, user_id: u64, lead: f32) {
    if user_id < MIN_SNOWFLAKE {
       return;
    }
    if let Some(lines) = lines_for(user_id) {
-      let _ = std::panic::catch_unwind(|| gpui::append_pieces(row, &lines));
+      let _ = std::panic::catch_unwind(|| gpui::append_pieces(row, &lines, lead));
    }
 }
 
