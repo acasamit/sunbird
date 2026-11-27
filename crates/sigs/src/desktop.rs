@@ -4771,10 +4771,23 @@ pub fn text_fields(image: &Image<'_>) -> Found<TextFields> {
    };
    // ELF can keep two copies of `set_value` from different codegen units,
    // one with its drops outlined, each calling its own `Arc<str>::drop_slow`.
-   let resolved = set_value_hits
-      .iter()
-      .map(|&(func, calls)| Ok((func, set_value_callees(calls)?)))
-      .collect::<Found<Vec<(usize, (usize, bool, usize))>>>()?;
+   // Windows 2208 matches a function besides `set_value`, which lacks its
+   // callees, so only the hits that decode count.
+   let mut first_err = None;
+   let mut resolved = Vec::new();
+   for &(func, calls) in &set_value_hits {
+      match set_value_callees(calls) {
+         Ok(callees) => resolved.push((func, callees)),
+         Err(err) => {
+            first_err.get_or_insert(err);
+         },
+      }
+   }
+   if resolved.is_empty()
+      && let Some(err) = first_err
+   {
+      return Err(err);
+   }
    let Some(&(set_value, (arc_drop_slow, _, update_entity_dyn))) = resolved
       .iter()
       .find(|(_, (_, inline, _))| *inline)
