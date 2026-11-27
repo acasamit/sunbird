@@ -234,6 +234,75 @@ unsafe extern "C" fn button_callback(
    });
 }
 
+/// The close cross's mouse-down listener. It is zero-sized, so the banner's ID
+/// rides in its data pointer, which GPUI never reads or frees.
+static CLOSE_VTBL: RcFnVtbl = RcFnVtbl {
+   drop_in_place: noop_drop as *const c_void,
+   size:          0,
+   align:         1,
+   call_once:     close_press as *const c_void,
+   call_mut:      close_press as *const c_void,
+   call:          close_press as *const c_void,
+   extra:         std::ptr::null(),
+};
+
+const unsafe extern "C" fn noop_drop(_data: *mut u8) {}
+
+/// Rust ABI like the `Fn::call` slot it fills, see `modal::scrim_press`.
+unsafe fn close_press(
+   data: *const u8,
+   _event: *mut u8,
+   phase: u8,
+   hitbox: *const c_void,
+   window: *const c_void,
+   _app: *mut u8,
+) {
+   let _ = std::panic::catch_unwind(|| {
+      if phase == crate::modal::PHASE_BUBBLE && crate::modal::hovered(hitbox, window) {
+         dismiss(data as u64);
+      }
+   });
+}
+
+/// Ends `header` with a plain `×` that closes banner `id`, light enough to keep
+/// the header as tall as its text, or Mana's button when the cross cannot
+/// listen for presses.
+fn push_close(header: RawDiv, slot: usize, id: u64) -> Option<RawDiv> {
+   let mut cross = text("\u{d7}", MUTED, 16.0)?;
+   gpui::style_div(&mut cross, |s| {
+      s.lengths(&[s.at.padding[1], s.at.padding[3]], gpui_px(4.0));
+   });
+   if crate::modal::listen_mouse_down(&mut cross, id as *mut u8, &CLOSE_VTBL) {
+      return Some(gpui::push_div(header, cross));
+   }
+   let button = gpui::build_raw_button(
+      &format!("sunbird-notice-{slot}-close"),
+      "\u{d7}",
+      BtnVariant::Secondary,
+      BtnSize::Small,
+      &raw const BUTTON_VTBL,
+      button_value(id, false),
+   )?;
+   Some(gpui::push_raw_button(header, button))
+}
+
+/// How many banners wait behind the shown ones, in a pill on the right styled
+/// like the cards, so it stays readable over chat and pictures.
+fn waiting_pill(waiting: usize) -> Option<RawDiv> {
+   let mut pill = text(&format!("+{waiting} more"), MUTED, 12.0)?;
+   gpui::style_div(&mut pill, |s| {
+      s.lengths(&[s.at.padding[0], s.at.padding[2]], gpui_px(2.0));
+      s.lengths(&[s.at.padding[1], s.at.padding[3]], gpui_px(8.0));
+      s.lengths(&s.at.corner_radii, gpui_px(10.0));
+      s.lengths(&s.at.border_widths, gpui_px(1.0));
+      s.hsla(s.at.border_color, argb_to_hsla(BORDER));
+      s.solid_background(argb_to_hsla(BACKGROUND));
+   });
+   // An empty first child pushes the pill to the right.
+   let row = gpui::push_div(gpui::h_row(0.0, true)?, gpui::raw_div()?);
+   Some(gpui::push_div(row, pill))
+}
+
 fn text(text: &str, argb: u32, font_px: f32) -> Option<RawDiv> {
    let mut div = gpui::raw_div()?;
    gpui::style_div(&mut div, |s| {
@@ -259,16 +328,7 @@ fn banner(slot: usize, id: u64, notice: &Notice) -> Option<RawDiv> {
    source = gpui::push_div(source, text(&notice.source, MUTED, 12.0)?);
    let mut header = gpui::h_row(8.0, true)?;
    header = gpui::push_div(header, source);
-   if let Some(close) = gpui::build_raw_button(
-      &format!("sunbird-notice-{slot}-close"),
-      "\u{d7}",
-      BtnVariant::Secondary,
-      BtnSize::Small,
-      &raw const BUTTON_VTBL,
-      button_value(id, false),
-   ) {
-      header = gpui::push_raw_button(header, close);
-   }
+   header = push_close(header, slot, id)?;
 
    let mut card = gpui::v_stack(4.0)?;
    gpui::style_div(&mut card, |s| {
@@ -357,7 +417,7 @@ pub fn build() -> Option<RawDiv> {
       s.length(s.at.size[0], gpui_px(WIDTH));
    });
    if waiting > 0 {
-      stack = gpui::push_div(stack, text(&format!("+{waiting} more"), MUTED, 12.0)?);
+      stack = gpui::push_div(stack, waiting_pill(waiting)?);
    }
    for (slot, (id, notice)) in up.iter().enumerate() {
       if let Some(banner) = banner(slot, *id, notice) {
