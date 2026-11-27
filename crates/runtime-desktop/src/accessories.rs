@@ -290,20 +290,27 @@ fn install_body_tint(image: &Image<'static>, render_row: usize) {
    BODY_MSG_ID_OFFSET.store(msg_id_off, Ordering::Release);
    ROW_COLORS_OFFSET.store(colors_off, Ordering::Release);
 
+   let pro = body.prologue;
    // SAFETY: runs from `prepare` before Discord threads execute;
    // `build_body_detour` matches `build_message_body`'s verified 6-argument
    // ABI.
-   let Some(orig) = (unsafe {
-      crate::hook::<BuildMessageBodyFn>(
-         image,
-         |pro| pro.row,
+   let trampoline = match unsafe {
+      image.hook_entry(
          body_fn,
+         pro.pattern,
+         pro.len,
          build_body_detour as *const () as usize,
-         "desktop accessories: message body tint hook failed",
       )
-   }) else {
-      return;
+   } {
+      Ok(trampoline) => trampoline,
+      Err(err) => {
+         log::warn!("desktop accessories: message body tint hook failed: {err}");
+         return;
+      },
    };
+   // SAFETY: `trampoline` replays the prologue the locator matched and jumps
+   // past it in `body_fn`.
+   let orig = unsafe { std::mem::transmute::<usize, BuildMessageBodyFn>(trampoline) };
    let _ = ORIG_BUILD_BODY.set(orig);
    log::info!(
       "desktop accessories: hooked message body tint @ {body_fn:#x} (msg_id +{msg_id_off:#x}, \
