@@ -1409,6 +1409,88 @@ fn svg_icon(
    }
 }
 
+/// GPUI's `Img` builders, resolved by [`locate_img`].
+struct ImgSymbols {
+   new:       ImgNewFn,
+   into_any:  ImgIntoAnyFn,
+   style_box: usize,
+}
+
+type RawImg = Scratch<{ layout::SVG_CAP }>;
+type ImgNewFn = unsafe extern "C" fn(*mut RawImg, *const u8, usize, *const c_void) -> *mut RawImg;
+type ImgIntoAnyFn = unsafe extern "C" fn(*mut RawAnyElement, *mut RawImg) -> *mut RawAnyElement;
+
+static IMG: OnceLock<ImgSymbols> = OnceLock::new();
+
+/// Resolves the `Img` builders, after [`locate`].
+pub fn locate_img(image: &Image<'static>) {
+   // The locator decodes x86-64. Without an arm64 one, banners on macOS leave
+   // their picture out.
+   if !crate::X86_CODE {
+      return;
+   }
+   let found = match desktop::img_builders(image) {
+      Ok(found) => found,
+      Err(err) => {
+         log::warn!("desktop gpui: {err}, pictures are left out");
+         return;
+      },
+   };
+   if found.size > layout::SVG_CAP {
+      log::warn!(
+         "desktop gpui: Img is {:#x} bytes, over {:#x}",
+         found.size,
+         layout::SVG_CAP
+      );
+      return;
+   }
+   // SAFETY: decoded from the code drawing a bundled picture, which calls them
+   // with these Rust-ABI signatures.
+   let symbols = unsafe {
+      ImgSymbols {
+         new:       std::mem::transmute::<usize, ImgNewFn>(found.new),
+         into_any:  std::mem::transmute::<usize, ImgIntoAnyFn>(found.into_any),
+         style_box: found.style_box,
+      }
+   };
+   let _ = IMG.set(symbols);
+   log::info!("desktop gpui: resolved Img builders {found:x?}");
+}
+
+/// A `px` pixel square picture from `url`, with corners rounded by `radius`
+/// pixels, as an `AnyElement`. GPUI fetches and caches it, and the square stays
+/// empty until it has loaded or when it cannot.
+pub fn image_any(url: &str, px: f32, radius: f32) -> Option<RawAnyElement> {
+   let sym = SYMBOLS.get()?;
+   let img = IMG.get()?;
+   let mut built = RawImg::zeroed();
+   // SAFETY: `img()` builds into a buffer that fits an `Img` and copies `url`.
+   unsafe { (img.new)(&raw mut built, url.as_ptr(), url.len(), sym.caller_loc) };
+   // SAFETY: the `Img`'s boxed `StyleRefinement`, at the decoded offset.
+   let style = unsafe {
+      built
+         .as_mut_ptr()
+         .add(img.style_box)
+         .cast::<*mut u8>()
+         .read_unaligned()
+   };
+   if !style.is_null() {
+      let s = Style {
+         ptr: style,
+         at:  &sym.layout.style,
+      };
+      s.lengths(&s.at.size, gpui_px(px));
+      s.float(s.at.flex_shrink, 0.0);
+      s.lengths(&s.at.corner_radii, gpui_px(radius));
+   }
+   let mut any = MaybeUninit::<RawAnyElement>::uninit();
+   // SAFETY: moves the `Img` into a 32-byte `AnyElement`.
+   unsafe {
+      (img.into_any)(any.as_mut_ptr(), &raw mut built);
+      Some(any.assume_init())
+   }
+}
+
 /// `pieces` side by side in a row: each piece's icons when it has any and
 /// they can be drawn, else its text.
 fn inline_row(b: &Builder, pieces: &[Piece], font_px: f32) -> RawDiv {

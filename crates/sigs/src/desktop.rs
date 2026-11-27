@@ -1392,6 +1392,8 @@ pub struct StyleOffsets {
    pub display:         usize,
    pub align_items:     usize,
    pub justify_content: usize,
+   /// `Option<CursorStyle>`, the pointer shown over the element.
+   pub mouse_cursor:    usize,
    pub border_widths:   [usize; 4],
    pub corner_radii:    [usize; 4],
    pub padding:         [usize; 4],
@@ -1547,6 +1549,7 @@ pub(crate) fn style_from_fields(
       display: get("display")?,
       align_items: get("align_items")?,
       justify_content: get("justify_content")?,
+      mouse_cursor: get("mouse_cursor")?,
       border_widths: edges("border_widths")?,
       corner_radii: [
          get("corner_radii.top_left")?,
@@ -1577,6 +1580,7 @@ pub(crate) fn style_from_fields(
       (style.display, 1),
       (style.align_items, 1),
       (style.justify_content, 1),
+      (style.mouse_cursor, 1),
    ];
    let lengths = [
       &style.border_widths[..],
@@ -2824,6 +2828,88 @@ pub fn svg_builders(image: &Image<'_>) -> Found<SvgBuilders> {
    Ok(SvgBuilders {
       new,
       path,
+      into_any,
+      size,
+      style_box,
+   })
+}
+
+/// A bundled picture every build so far draws with `img(path)`, which the
+/// `Img` builders are found from.
+const BUNDLED_IMG: &[u8] = b"features_ui/premium/premium_group/images/premium_group_spot_illo.svg";
+
+/// GPUI's `Img` element builders.
+#[derive(Clone, Copy, Debug)]
+pub struct ImgBuilders {
+   /// `img(&str)`: `(sret, ptr, len, &caller_location) -> Img`. It copies the
+   /// source, a URL when it parses as one and else an asset path.
+   pub new:       usize,
+   /// `Img::into_any_element`: `(sret, img) -> AnyElement`.
+   pub into_any:  usize,
+   /// `Img`'s size, which `into_any` moves.
+   pub size:      usize,
+   /// Where `Img` keeps its boxed `StyleRefinement`.
+   pub style_box: usize,
+}
+
+/// The function drawing [`BUNDLED_IMG`]: `img()` is the first call after the
+/// path is loaded, `into_any` the last one before it returns, and a style
+/// setter between them reads the style box.
+pub fn img_builders(image: &Image<'_>) -> Found<ImgBuilders> {
+   let abi = Abi::of(image);
+   let (func, lea) = image
+      .find_bytes(BUNDLED_IMG)
+      .iter()
+      .flat_map(|&anchor| lea_refs(image, anchor))
+      .find_map(|lea| Some((image.function_bounds(lea)?.0, lea)))
+      .ok_or("no code draws the bundled image")?;
+   let lines = phoenix_hook::x86::disasm(function_code(image, func, "image")?, func, usize::MAX);
+   let at = lines
+      .iter()
+      .position(|line| line.addr == lea)
+      .ok_or("image path load not decoded")?;
+   let ret = lines[at..]
+      .iter()
+      .position(|line| line.text == "ret")
+      .ok_or("image return not found")?;
+   let calls = lines[at..at + ret]
+      .iter()
+      .filter_map(|line| callee(image, line))
+      .collect::<Vec<_>>();
+   let (&new, &into_any) = calls
+      .first()
+      .zip(calls.last())
+      .filter(|(new, into_any)| new != into_any)
+      .ok_or("img() and Img::into_any calls not found")?;
+   // `mov reg, [img+box]` at the head of a style setter taking the `Img`.
+   let box_load = format!(",[{}+", reg_name(abi.arg(1)));
+   let style_box = calls[1..calls.len() - 1]
+      .iter()
+      .find_map(|&setter| {
+         let head = image.read(setter, 0x20)?;
+         phoenix_hook::x86::disasm(head, setter, 6)
+            .iter()
+            .find_map(|line| {
+               let (_, disp) = line.text.strip_prefix("mov ")?.split_once(&box_load)?;
+               hex_disp(disp.strip_suffix(']')?)
+            })
+      })
+      .filter(|&offset| (0x100..0x800).contains(&offset))
+      .ok_or("Img style box not found")?;
+   // It copies the `Img` with its size as the third argument.
+   let size_load = format!("mov {},", reg_name(abi.arg(2).full_register32()));
+   let size = image
+      .read(into_any, 0x30)
+      .map(|head| phoenix_hook::x86::disasm(head, into_any, 8))
+      .and_then(|head| {
+         head
+            .iter()
+            .find_map(|line| hex_disp(line.text.strip_prefix(&size_load)?))
+      })
+      .filter(|&size| (style_box..0x1000).contains(&size))
+      .ok_or("Img size not found")?;
+   Ok(ImgBuilders {
+      new,
       into_any,
       size,
       style_box,

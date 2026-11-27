@@ -60,6 +60,8 @@ pub struct Desktop<'js> {
    /// The buttons on settings tabs as last rendered, keyed by button ID, with
    /// their tab's ID.
    pub tab_buttons:    RefCell<HashMap<u64, (u64, Function<'js>)>>,
+   /// `phoenix.ui.notify` `onPress` callbacks, keyed by banner ID.
+   pub notices:        RefCell<HashMap<u64, (String, Function<'js>)>>,
    /// `phoenix.messages.onEmojiPick` handlers by id and plugin. Desktop has
    /// no picker presses to give them, only the unlock they turn on.
    pub emoji_pickers:  RefCell<Vec<(u64, String)>>,
@@ -113,9 +115,9 @@ fn unload_tabs(registry: &Desktop<'_>, name: &str) {
 }
 
 /// Drops the accessories, member decorations, context menu actions, open page
-/// callbacks, settings tabs, emoji pick handlers, hidden counts, sidebar
-/// collapses, header buttons and shortcuts `name` registered and redraws
-/// Discord without them.
+/// callbacks, settings tabs, banners, emoji pick handlers, hidden counts,
+/// sidebar collapses, header buttons and shortcuts `name` registered and
+/// redraws Discord without them.
 pub fn unload(ctx: &Ctx<'_>, name: &str) {
    let Some(registry) = ctx.userdata::<Desktop<'_>>() else {
       return;
@@ -154,6 +156,11 @@ pub fn unload(ctx: &Ctx<'_>, name: &str) {
       .page_buttons
       .borrow_mut()
       .retain(|_, (_, plugin, _)| plugin != name);
+   registry
+      .notices
+      .borrow_mut()
+      .retain(|_, (plugin, _)| plugin != name);
+   crate::notices::remove_plugin(name);
 
    unload_tabs(&registry, name);
 

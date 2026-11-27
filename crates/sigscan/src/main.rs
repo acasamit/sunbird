@@ -315,6 +315,10 @@ fn check(image: &Image<'_>, machine: Machine, macho: bool) -> misstep::Result<()
             "svg builders",
             desktop::svg_builders(image).map(|svg| format!("{svg:x?}")),
          );
+         report(
+            "img builders",
+            desktop::img_builders(image).map(|img| format!("{img:x?}")),
+         );
          report("asset loader", desktop::asset_load(image).map(at));
          let row = desktop::message_row(image);
          report(
