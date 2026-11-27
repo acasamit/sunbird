@@ -42,6 +42,7 @@ use rquickjs::{
    Function,
    Object,
    Value,
+   convert::Coerced,
    function::{
       Opt,
       This,
@@ -77,6 +78,12 @@ use crate::{
    },
    shortcuts,
    sidebar,
+   tabs::{
+      self,
+      Block,
+      Button,
+      Variant,
+   },
    toolbar,
 };
 
@@ -96,6 +103,14 @@ pub struct DesktopMember<'js> {
    pub plugin:   String,
    pub priority: i32,
    pub render:   Function<'js>,
+}
+
+/// A `phoenix.ui.addSettingsTab` callback.
+#[derive(Clone)]
+pub struct DesktopTab<'js> {
+   pub id:     u64,
+   pub plugin: String,
+   pub render: Function<'js>,
 }
 
 #[derive(Clone)]
@@ -1375,6 +1390,217 @@ fn drop_page_buttons(ctx: &Ctx<'_>, owner: u64) {
    }
 }
 
+/// `danger` wins over `primary`.
+fn variant(obj: &Object<'_>) -> Variant {
+   let flag = |key: &str| {
+      obj.get::<_, Option<bool>>(key)
+         .ok()
+         .flatten()
+         .unwrap_or_default()
+   };
+   if flag("danger") {
+      Variant::Danger
+   } else if flag("primary") {
+      Variant::Primary
+   } else {
+      Variant::Secondary
+   }
+}
+
+/// A button's label, with its `onPress` added to `pressed` under a new ID.
+fn parse_button<'js>(obj: &Object<'js>, pressed: &mut Vec<(u64, Function<'js>)>) -> Option<Button> {
+   static NEXT_BUTTON: AtomicU64 = AtomicU64::new(1);
+
+   let label = obj.get::<_, String>("label").ok()?;
+   let on_press = obj.get::<_, Function<'js>>("onPress").ok()?;
+   let id = NEXT_BUTTON.fetch_add(1, Ordering::Relaxed);
+   pressed.push((id, on_press));
+   Some(Button {
+      label,
+      variant: variant(obj),
+      id,
+   })
+}
+
+/// The blocks a settings tab's `render` returned, without those it cannot
+/// draw.
+fn parse_blocks<'js>(value: &Value<'js>, pressed: &mut Vec<(u64, Function<'js>)>) -> Vec<Block> {
+   let Some(list) = value.as_array() else {
+      return Vec::new();
+   };
+   list
+      .iter::<Object<'js>>()
+      .filter_map(Result::ok)
+      .take(256)
+      .filter_map(|block| {
+         let text = |key: &str| {
+            block
+               .get::<_, Option<String>>(key)
+               .ok()
+               .flatten()
+               .unwrap_or_default()
+         };
+         match text("type").as_str() {
+            "text" => {
+               Some(Block::Text {
+                  title: text("title"),
+                  text:  text("text"),
+               })
+            },
+            "action" => {
+               Some(Block::Action {
+                  title:       text("title"),
+                  description: text("description"),
+                  button:      parse_button(&block, pressed)?,
+               })
+            },
+            "buttons" => {
+               let buttons = block.get::<_, Array<'js>>("buttons").ok()?;
+               Some(Block::Buttons(
+                  buttons
+                     .iter::<Object<'js>>()
+                     .filter_map(Result::ok)
+                     .take(8)
+                     .filter_map(|button| parse_button(&button, pressed))
+                     .collect(),
+               ))
+            },
+            "divider" => Some(Block::Divider),
+            _ => None,
+         }
+      })
+      .collect()
+}
+
+/// Keeps what settings tab `id`'s `render` returned for the page to draw.
+fn store_blocks<'js>(ctx: &Ctx<'js>, id: u64, value: &Value<'js>) {
+   let mut pressed = Vec::new();
+   let blocks = parse_blocks(value, &mut pressed);
+   if !tabs::set_blocks(id, blocks) {
+      return;
+   }
+   if let Some(registry) = ctx.userdata::<Desktop<'js>>() {
+      let mut buttons = registry.tab_buttons.borrow_mut();
+      buttons.retain(|_, (tab, _)| *tab != id);
+      buttons.extend(
+         pressed
+            .into_iter()
+            .map(|(button, on_press)| (button, (id, on_press))),
+      );
+   }
+   crate::modal::force_redraw();
+}
+
+/// Calls settings tab `id`'s `render` and keeps its blocks once they settle.
+fn render_tab<'js>(ctx: &Ctx<'js>, id: u64) {
+   let Some(tab) = ctx.userdata::<Desktop<'js>>().and_then(|registry| {
+      registry
+         .tabs
+         .borrow()
+         .iter()
+         .find(|tab| tab.id == id)
+         .cloned()
+   }) else {
+      return;
+   };
+   match tab.render.call::<_, Value<'js>>(()).catch(ctx) {
+      Ok(value) if value.is_promise() => {
+         let Some(promise) = value.as_object() else {
+            return;
+         };
+         let Ok(then) = promise.get::<_, Function<'js>>("then") else {
+            return;
+         };
+         let plugin = tab.plugin;
+         let resolved = Function::new(ctx.clone(), move |ctx: Ctx<'js>, value: Value<'js>| {
+            store_blocks(&ctx, id, &value);
+         });
+         let rejected = Function::new(ctx.clone(), move |err: Coerced<String>| {
+            log::error!("[{plugin}] addSettingsTab render: {}", err.0);
+         });
+         if let (Ok(resolved), Ok(rejected)) = (resolved, rejected) {
+            let _ = then.call::<_, Value<'_>>((This(promise.clone()), resolved, rejected));
+         }
+      },
+      Ok(value) => store_blocks(ctx, id, &value),
+      Err(err) => log::error!("[{}] addSettingsTab render: {err}", tab.plugin),
+   }
+}
+
+/// Renders settings tab `id` again, as it is picked.
+pub fn refresh_tab(id: u64) {
+   if let Some(engine) = phoenix_runtime::engine() {
+      engine.with(|ctx| render_tab(&ctx, id));
+   }
+}
+
+/// Runs a settings tab button's `onPress`, then renders its tab again so what
+/// it changed shows.
+pub fn press_tab_button(button: u64) {
+   let Some(engine) = phoenix_runtime::engine() else {
+      return;
+   };
+   engine.with(|ctx| {
+      let Some((tab, on_press)) = ctx
+         .userdata::<Desktop<'_>>()
+         .and_then(|registry| registry.tab_buttons.borrow().get(&button).cloned())
+      else {
+         return;
+      };
+      if let Err(err) = on_press.call::<_, Value<'_>>(()).catch(&ctx) {
+         let plugin = tabs::get(tab).map_or_default(|tab| tab.plugin);
+         log::error!("[{plugin}] addSettingsTab onPress: {err}");
+      }
+      render_tab(&ctx, tab);
+   });
+}
+
+fn add_settings_tab<'js>(
+   ctx: &Ctx<'js>,
+   plugin: &str,
+   options: &Object<'js>,
+) -> rquickjs::Result<Function<'js>> {
+   static NEXT_TAB: AtomicU64 = AtomicU64::new(1);
+
+   let title = options.get::<_, String>("title")?;
+   let render = options.get::<_, Function<'js>>("render")?;
+   let id = NEXT_TAB.fetch_add(1, Ordering::Relaxed);
+   ctx.userdata::<Desktop<'js>>()
+      .ok_or_else(|| Exception::throw_internal(ctx, "no registry"))?
+      .tabs
+      .borrow_mut()
+      .push(DesktopTab {
+         id,
+         plugin: plugin.to_owned(),
+         render,
+      });
+   tabs::add(tabs::Tab {
+      id,
+      plugin: plugin.to_owned(),
+      title,
+      blocks: Vec::new(),
+   });
+   render_tab(ctx, id);
+   crate::modal::force_redraw();
+
+   let remove = Function::new(ctx.clone(), move |ctx: Ctx<'js>| {
+      if let Some(registry) = ctx.userdata::<Desktop<'js>>() {
+         registry.tabs.borrow_mut().retain(|tab| tab.id != id);
+         registry
+            .tab_buttons
+            .borrow_mut()
+            .retain(|_, (tab, _)| *tab != id);
+      }
+      tabs::remove(id);
+      crate::modal::force_redraw();
+   })?;
+   remove.set(
+      "update",
+      Function::new(ctx.clone(), move |ctx: Ctx<'js>| render_tab(&ctx, id))?,
+   )?;
+   Ok(remove)
+}
+
 /// Wires desktop `phoenix.ui`, `phoenix.messages.onSend` / `onEmojiPick`, and
 /// `phoenix.commands` onto the plugin's API objects.
 pub fn desktop_patch_api<'js>(
@@ -1528,6 +1754,14 @@ pub fn desktop_ui_object<'js>(ctx: &Ctx<'js>, plugin: &str) -> rquickjs::Result<
             on_event(&ctx, &event_owner, &event, handler)
          },
       )?,
+   )?;
+
+   let tab_owner = plugin.to_owned();
+   ui.set(
+      "addSettingsTab",
+      Function::new(ctx.clone(), move |ctx: Ctx<'js>, options: Object<'js>| {
+         add_settings_tab(&ctx, &tab_owner, &options)
+      })?,
    )?;
 
    // Graceful no-op shims for remaining mobile UI-op surfaces so cross-platform

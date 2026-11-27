@@ -216,6 +216,9 @@ pub enum BtnSize {
 /// `h_full`) in GPUI's `StyleRefinement`.
 pub const W_FULL: u64 = 0x3F80_0000_0000_0002;
 
+/// `FlexWrap::Wrap` in `StyleRefinement`.
+const FLEX_WRAP: u8 = 1;
+
 /// Encodes `Some(AbsoluteLength::Pixels(px))` in GPUI's `StyleRefinement`.
 pub fn gpui_px(px: f32) -> u64 {
    u64::from(px.to_bits()) << 32
@@ -284,6 +287,8 @@ enum Tab {
    Plugins,
    Catalog,
    General,
+   /// A plugin's `addSettingsTab`, by its ID.
+   Plugin(u64),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -356,6 +361,8 @@ enum Action {
       key:    String,
    },
    InstallCatalog(String),
+   /// A button on a plugin's settings tab, by its ID.
+   PressTabButton(u64),
 }
 
 static ACTIONS: LazyLock<Mutex<Vec<Action>>> = LazyLock::new(|| Mutex::new(Vec::new()));
@@ -423,9 +430,14 @@ unsafe extern "C" fn button_callback(
       };
       match action {
          Action::SetTab(tab) => {
-            let mut ui = UI_STATE.lock().unwrap_or_else(PoisonError::into_inner);
-            ui.tab = tab;
-            ui.open_select = None;
+            {
+               let mut ui = UI_STATE.lock().unwrap_or_else(PoisonError::into_inner);
+               ui.tab = tab;
+               ui.open_select = None;
+            }
+            if let Tab::Plugin(id) = tab {
+               crate::js::ui::refresh_tab(id);
+            }
          },
          Action::SetFilter(filter) => {
             UI_STATE
@@ -507,6 +519,7 @@ unsafe extern "C" fn button_callback(
             }
          },
          Action::PressButton { plugin, key } => phoenix_runtime::press(&plugin, &key),
+         Action::PressTabButton(button) => crate::js::ui::press_tab_button(button),
          Action::InstallCatalog(name) => {
             std::thread::spawn(move || {
                match update::install_listed(&name) {
@@ -1537,7 +1550,7 @@ pub fn render_sunbird_page(sret: *mut RawAnyElement) -> bool {
       .unwrap_or_else(PoisonError::into_inner)
       .clear();
 
-   let (tab, filter, expanded_plugins, open_select, cat_desktop, cat_partial, cat_mobile) = {
+   let (mut tab, filter, expanded_plugins, open_select, cat_desktop, cat_partial, cat_mobile) = {
       let ui = UI_STATE.lock().unwrap_or_else(PoisonError::into_inner);
       (
          ui.tab,
@@ -1549,6 +1562,15 @@ pub fn render_sunbird_page(sret: *mut RawAnyElement) -> bool {
          ui.cat_mobile_open,
       )
    };
+
+   let plugin_tabs = crate::tabs::titles();
+   if let Tab::Plugin(id) = tab
+      && !plugin_tabs.iter().any(|(at, ..)| *at == id)
+   {
+      // Its plugin was turned off or reloaded, which drops the tab.
+      tab = Tab::Plugins;
+      UI_STATE.lock().unwrap_or_else(PoisonError::into_inner).tab = tab;
+   }
 
    let plugins = phoenix_runtime::plugins();
    let enabled_count = plugins.iter().filter(|p| p.enabled).count();
@@ -1564,40 +1586,7 @@ pub fn render_sunbird_page(sret: *mut RawAnyElement) -> bool {
       phoenix_ui_desktop::DEVTOOLS_SHORTCUT,
    );
    root = b.push_div(root, b.text_block("Sunbird", &summary));
-
-   let variant_for = |t: Tab| {
-      if tab == t {
-         BtnVariant::Primary
-      } else {
-         BtnVariant::Secondary
-      }
-   };
-   let mut tab_bar = b.h_row(8.0, false);
-   tab_bar = b.push_button(
-      tab_bar,
-      "sunbird-tab-plugins",
-      &format!("Plugins ({})", plugins.len()),
-      variant_for(Tab::Plugins),
-      BtnSize::Small,
-      Action::SetTab(Tab::Plugins),
-   );
-   tab_bar = b.push_button(
-      tab_bar,
-      "sunbird-tab-catalog",
-      "Plugin Catalog",
-      variant_for(Tab::Catalog),
-      BtnSize::Small,
-      Action::SetTab(Tab::Catalog),
-   );
-   tab_bar = b.push_button(
-      tab_bar,
-      "sunbird-tab-general",
-      "General & Updates",
-      variant_for(Tab::General),
-      BtnSize::Small,
-      Action::SetTab(Tab::General),
-   );
-   root = b.push_div(root, tab_bar);
+   root = b.push_div(root, tab_bar(&b, tab, plugins.len(), &plugin_tabs));
    root = b.push_div(root, b.divider());
 
    // 2. Active Category Content
@@ -1621,10 +1610,69 @@ pub fn render_sunbird_page(sret: *mut RawAnyElement) -> bool {
       Tab::General => {
          root = render_general_tab(&b, root);
       },
+      Tab::Plugin(id) => {
+         if let Some(plugin_tab) = crate::tabs::get(id) {
+            root = render_plugin_tab(&b, root, &plugin_tab);
+         }
+      },
    }
 
    b.write_any(root, sret);
    true
+}
+
+/// Sunbird's tabs, then each plugin's, with `tab` picked.
+fn tab_bar(
+   b: &Builder,
+   tab: Tab,
+   plugin_count: usize,
+   plugin_tabs: &[(u64, String, String)],
+) -> RawDiv {
+   let variant_for = |t: Tab| {
+      if tab == t {
+         BtnVariant::Primary
+      } else {
+         BtnVariant::Secondary
+      }
+   };
+   let mut tab_bar = b.h_row(8.0, false);
+   tab_bar = b.push_button(
+      tab_bar,
+      "sunbird-tab-plugins",
+      &format!("Plugins ({plugin_count})"),
+      variant_for(Tab::Plugins),
+      BtnSize::Small,
+      Action::SetTab(Tab::Plugins),
+   );
+   tab_bar = b.push_button(
+      tab_bar,
+      "sunbird-tab-catalog",
+      "Plugin Catalog",
+      variant_for(Tab::Catalog),
+      BtnSize::Small,
+      Action::SetTab(Tab::Catalog),
+   );
+   tab_bar = b.push_button(
+      tab_bar,
+      "sunbird-tab-general",
+      "General & Updates",
+      variant_for(Tab::General),
+      BtnSize::Small,
+      Action::SetTab(Tab::General),
+   );
+   for (id, plugin, title) in plugin_tabs {
+      tab_bar = b.push_button(
+         tab_bar,
+         &format!("sunbird-tab-{plugin}-{title}"),
+         title,
+         variant_for(Tab::Plugin(*id)),
+         BtnSize::Small,
+         Action::SetTab(Tab::Plugin(*id)),
+      );
+   }
+   // Plugin tabs can outgrow one line.
+   b.style_div(&mut tab_bar, |s| s.set(s.at.flex_wrap, FLEX_WRAP));
+   tab_bar
 }
 
 #[expect(
@@ -2248,6 +2296,74 @@ fn render_general_tab(b: &Builder, mut root: RawDiv) -> RawDiv {
       ),
    );
    b.push_div(root, upd_card)
+}
+
+const fn tab_variant(variant: crate::tabs::Variant) -> BtnVariant {
+   match variant {
+      crate::tabs::Variant::Primary => BtnVariant::Primary,
+      crate::tabs::Variant::Secondary => BtnVariant::Secondary,
+      crate::tabs::Variant::Danger => BtnVariant::Critical,
+   }
+}
+
+/// A plugin's settings tab, from the blocks its `render` returned last.
+fn render_plugin_tab(b: &Builder, mut root: RawDiv, tab: &crate::tabs::Tab) -> RawDiv {
+   use crate::tabs::Block;
+
+   let mut card: Option<RawDiv> = None;
+   for (at, block) in tab.blocks.iter().enumerate() {
+      // Interned, so they stay one per place on the page.
+      let id = |n: usize| format!("sunbird-ptab-{}-{}-{at}-{n}", tab.plugin, tab.title);
+      if let Block::Action {
+         title,
+         description,
+         button,
+      } = block
+      {
+         let row = b.action_row(
+            &id(0),
+            title,
+            description,
+            &button.label,
+            tab_variant(button.variant),
+            BtnSize::Medium,
+            Action::PressTabButton(button.id),
+         );
+         let open = card.take().map_or_else(
+            || b.card(10.0, 16.0, 8.0, 0.20),
+            |open| b.push_div(open, b.divider()),
+         );
+         card = Some(b.push_div(open, row));
+         continue;
+      }
+      if let Some(done) = card.take() {
+         root = b.push_div(root, done);
+      }
+      match block {
+         Block::Text { title, text } => root = b.push_div(root, b.text_block(title, text)),
+         Block::Buttons(buttons) => {
+            let mut row = b.h_row(8.0, false);
+            for (n, button) in buttons.iter().enumerate() {
+               row = b.push_button(
+                  row,
+                  &id(n),
+                  &button.label,
+                  tab_variant(button.variant),
+                  BtnSize::Small,
+                  Action::PressTabButton(button.id),
+               );
+            }
+            b.style_div(&mut row, |s| s.set(s.at.flex_wrap, FLEX_WRAP));
+            root = b.push_div(root, row);
+         },
+         Block::Divider => root = b.push_div(root, b.divider()),
+         Block::Action { .. } => {},
+      }
+   }
+   if let Some(done) = card {
+      root = b.push_div(root, done);
+   }
+   root
 }
 
 fn updates_card_state() -> (String, &'static str, BtnVariant, Action) {
