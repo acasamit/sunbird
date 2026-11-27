@@ -1408,6 +1408,11 @@ fn notify<'js>(
       None => Some(notices::DURATION),
    };
    let on_press = options.get::<_, Option<Function<'js>>>("onPress")?;
+   let round = options.get::<_, Option<String>>("imageShape")?.as_deref() != Some("square");
+   let picture = options
+      .get::<_, Option<String>>("image")?
+      .filter(|url| url.starts_with("https://") && url.len() <= 2048)
+      .map(|url| notices::Picture { url, round });
    let Some(id) = notices::show(Notice {
       source: plugin.to_owned(),
       title: title.clone(),
@@ -1415,6 +1420,7 @@ fn notify<'js>(
       accent,
       duration,
       pressable: on_press.is_some(),
+      picture,
    }) else {
       phoenix_ui_desktop::notify(&title, body.as_deref());
       return noop_handle(ctx);

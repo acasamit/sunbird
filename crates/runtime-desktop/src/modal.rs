@@ -1353,6 +1353,8 @@ pub fn install(image: &Image<'static>) {
    };
    let _ = ORIG_OVERLAY_RENDER.set(orig);
    install_settings_layer(image);
+   // Without it, banners leave their picture out.
+   crate::gpui::locate_img(image);
    crate::notices::enable();
    log::info!(
       "desktop modal: hooked Workspace::render_overlays @ {:#x} (push={:#x}, val +{:#x}) {:x?}",

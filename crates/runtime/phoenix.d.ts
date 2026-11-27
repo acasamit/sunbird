@@ -1397,6 +1397,10 @@ declare namespace Phoenix {
     durationMs?: number;
     /// Runs when the notification banner is tapped, or on desktop when its Open button is pressed.
     onPress?(): void;
+    /// An `https` picture on the banner's left, like an avatar or a server icon (desktop only).
+    image?: string;
+    /// The picture's shape (defaults to `"circle"`; `"square"` rounds its corners).
+    imageShape?: "circle" | "square";
   }
 
   /// Plugin UI next to Phoenix's own. Plugin callbacks run off the UI threads, so drawn results

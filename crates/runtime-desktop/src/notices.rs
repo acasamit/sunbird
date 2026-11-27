@@ -48,10 +48,25 @@ const BACKGROUND: u32 = 0xFA2B_2D31;
 const BORDER: u32 = 0xFF3F_4147;
 const TITLE: u32 = 0xFFF2_F3F5;
 const MUTED: u32 = 0xFFB5_BAC1;
+/// A banner picture's side, and a square one's corner radius.
+const PICTURE: f32 = 40.0;
+const PICTURE_RADIUS: f32 = 10.0;
+/// What is left of the card's width beside a picture, without the padding on
+/// both sides (24), the border (2) and the gap (10).
+const BESIDE_PICTURE: f32 = WIDTH - 24.0 - 2.0 - PICTURE - 10.0;
 
 const POSITION_ABSOLUTE: u8 = 1;
 /// `CursorStyle::PointingHand`, GPUI's sixth cursor.
 const CURSOR_POINTING_HAND: u8 = 5;
+
+/// A picture on a banner's left, like an avatar or a server icon.
+#[derive(Clone)]
+pub struct Picture {
+   /// An `https` URL, which GPUI fetches and caches.
+   pub url:   String,
+   /// A circle, else a rounded square.
+   pub round: bool,
+}
 
 #[derive(Clone)]
 pub struct Notice {
@@ -64,6 +79,7 @@ pub struct Notice {
    pub duration:  Option<Duration>,
    /// Whether it has an Open button, which runs the plugin's `onPress`.
    pub pressable: bool,
+   pub picture:   Option<Picture>,
 }
 
 impl Notice {
@@ -76,6 +92,7 @@ impl Notice {
          accent:    ACCENT,
          duration:  Some(DURATION),
          pressable: false,
+         picture:   None,
       }
    }
 }
@@ -310,7 +327,24 @@ fn banner(slot: usize, id: u64, notice: &Notice) -> Option<RawDiv> {
    if let Some(body) = notice.body.as_deref().filter(|body| !body.is_empty()) {
       words = gpui::push_div(words, text(body, MUTED, 13.0)?);
    }
-   card = gpui::push_div(card, words);
+   let picture = notice.picture.as_ref().and_then(|picture| {
+      let radius = if picture.round {
+         PICTURE / 2.0
+      } else {
+         PICTURE_RADIUS
+      };
+      gpui::image_any(&picture.url, PICTURE, radius)
+   });
+   if let Some(mut picture) = picture {
+      gpui::style_div(&mut words, |s| {
+         s.lengths(&s.at.size[..1], gpui_px(BESIDE_PICTURE));
+      });
+      let mut row = gpui::h_row(10.0, false)?;
+      gpui::push_any(&mut row, &mut picture);
+      card = gpui::push_div(card, gpui::push_div(row, words));
+   } else {
+      card = gpui::push_div(card, words);
+   }
    if notice.pressable
       && let Some(open) = gpui::build_raw_button(
          &format!("sunbird-notice-{slot}-open"),
