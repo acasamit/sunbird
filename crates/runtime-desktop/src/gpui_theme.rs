@@ -134,6 +134,7 @@ mod draw {
    mod quad {
       pub const SIZE: usize = 160;
       pub const BOUNDS: usize = 8;
+      pub const CONTENT_MASK: usize = 24;
       pub const BACKGROUND_TAG: usize = 40;
       pub const SOLID: usize = 48;
       /// The two `LinearColorStop`s of a gradient, an `Hsla` and a percentage.
@@ -262,15 +263,18 @@ mod draw {
    }
 
    fn recolor_quads(quads: &mut [u8], theme: &Theme) {
-      // The window's own background is the largest quad.
+      // Every quad is clipped to the window, so the content masks reach its
+      // edges and never past them. Bounds can: a scrolled list taller than the
+      // window would make the window look taller than it is, and the backdrop
+      // under Settings then no longer reads as full-window and turns opaque.
       let window =
          quads
             .as_chunks::<{ quad::SIZE }>()
             .0
             .iter()
             .fold((0.0f32, 0.0f32), |(w, h), q| {
-               let b = read4(q, quad::BOUNDS);
-               (w.max(b[2]), h.max(b[3]))
+               let [x, y, mw, mh] = read4(q, quad::CONTENT_MASK);
+               (w.max(x + mw), h.max(y + mh))
             });
       let sized = window.0 >= 400.0 && window.1 >= 300.0;
       for q in quads.as_chunks_mut::<{ quad::SIZE }>().0 {
