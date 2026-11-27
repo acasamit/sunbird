@@ -93,6 +93,25 @@ unsafe impl<'js> JsLifetime<'js> for Desktop<'js> {
    type Changed<'to> = Desktop<'to>;
 }
 
+/// Drops the settings tabs `name` added and their buttons.
+fn unload_tabs(registry: &Desktop<'_>, name: &str) {
+   let mut tab_list = registry.tabs.borrow_mut();
+   let gone: Vec<u64> = tab_list
+      .iter()
+      .filter(|tab| tab.plugin == name)
+      .map(|tab| tab.id)
+      .collect();
+   tab_list.retain(|tab| tab.plugin != name);
+   drop(tab_list);
+   registry
+      .tab_buttons
+      .borrow_mut()
+      .retain(|_, (tab, _)| !gone.contains(tab));
+   if tabs::remove_plugin(name) {
+      crate::modal::force_redraw();
+   }
+}
+
 /// Drops the accessories, member decorations, context menu actions, open page
 /// callbacks, settings tabs, emoji pick handlers, hidden counts, sidebar
 /// collapses, header buttons and shortcuts `name` registered and redraws
@@ -136,21 +155,7 @@ pub fn unload(ctx: &Ctx<'_>, name: &str) {
       .borrow_mut()
       .retain(|_, (_, plugin, _)| plugin != name);
 
-   let mut tab_list = registry.tabs.borrow_mut();
-   let gone: Vec<u64> = tab_list
-      .iter()
-      .filter(|tab| tab.plugin == name)
-      .map(|tab| tab.id)
-      .collect();
-   tab_list.retain(|tab| tab.plugin != name);
-   drop(tab_list);
-   registry
-      .tab_buttons
-      .borrow_mut()
-      .retain(|_, (tab, _)| !gone.contains(tab));
-   if tabs::remove_plugin(name) {
-      crate::modal::force_redraw();
-   }
+   unload_tabs(&registry, name);
 
    let mut pickers = registry.emoji_pickers.borrow_mut();
    pickers.retain(|(_, plugin)| plugin != name);
