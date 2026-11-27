@@ -365,6 +365,9 @@ pub fn build() -> Option<RawDiv> {
       s.length(s.at.inset[2], gpui_px(MARGIN));
       s.length(s.at.size[0], gpui_px(WIDTH));
    });
+   // A press on a banner stays on it: under Settings lies its backdrop, which
+   // would close Settings, and elsewhere the chat.
+   crate::modal::swallow_presses(&mut stack);
    if waiting > 0 {
       stack = gpui::push_div(stack, waiting_pill(waiting)?);
    }

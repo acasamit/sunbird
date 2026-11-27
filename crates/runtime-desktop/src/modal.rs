@@ -859,6 +859,16 @@ static CARD_PRESS_VTBL: RcFnVtbl = RcFnVtbl {
    extra:         ptr::null(),
 };
 
+static SWALLOW_PRESS_VTBL: RcFnVtbl = RcFnVtbl {
+   drop_in_place: noop_drop as *const c_void,
+   size:          0,
+   align:         1,
+   call_once:     swallow_press as *const c_void,
+   call_mut:      swallow_press as *const c_void,
+   call:          swallow_press as *const c_void,
+   extra:         ptr::null(),
+};
+
 pub const PHASE_BUBBLE: u8 = 0;
 pub const PHASE_CAPTURE: u8 = 1;
 
@@ -918,6 +928,40 @@ unsafe fn card_press(
          PRESS_IN_CARD.store(true, Ordering::Relaxed);
       }
    });
+}
+
+/// Ends a press on the element after its own listeners ran, so what lies
+/// under it never sees the press.
+unsafe fn swallow_press(
+   _data: *const u8,
+   _event: *const c_void,
+   phase: u8,
+   hitbox: *const c_void,
+   window: *const c_void,
+   app: *mut u8,
+) {
+   let _ = std::panic::catch_unwind(|| {
+      if phase != PHASE_BUBBLE || app.is_null() {
+         return;
+      }
+      let Some(sym) = DISMISS_SYM.get() else {
+         return;
+      };
+      // SAFETY: GPUI passes the live `&Hitbox`, `&Window` and `&mut App`, and
+      // `propagate_event` is a `bool` in `App`, located by `sigs`.
+      unsafe {
+         if (sym.is_hovered)(hitbox, window) {
+            app.add(sym.propagate_event).write(0);
+         }
+      }
+   });
+}
+
+/// Keeps a press on `div` from reaching what is drawn under it. Children
+/// bubble first, so their own listeners still run. Settings closes on a press
+/// on its backdrop, which lies under anything drawn over it.
+pub fn swallow_presses(div: &mut RawDiv) -> bool {
+   on_mouse_down(div, &SWALLOW_PRESS_VTBL)
 }
 
 /// Pushes a zero-sized listener into `div`'s `Interactivity` mouse-down list,
@@ -1987,7 +2031,10 @@ unsafe extern "C" fn overlay_render_detour(
    // SAFETY: always render Discord's own overlay stack first.
    let out = unsafe { orig(sret, workspace, arg3, window, cx) };
    push_modal(sret, window, cx);
-   if !sret.is_null() && !settings_drawn_recently() {
+   // Banners go here even while Settings is open and draws its own copy over
+   // itself: this one lies right under it, and is already there the moment
+   // Settings closes instead of after `SETTINGS_RECENT_MS`.
+   if !sret.is_null() {
       let _ = std::panic::catch_unwind(|| {
          if let Some(notices) = crate::notices::build() {
             push_overlay(sret, notices);
