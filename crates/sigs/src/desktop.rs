@@ -1392,6 +1392,8 @@ pub struct StyleOffsets {
    pub display:         usize,
    pub align_items:     usize,
    pub justify_content: usize,
+   /// `Option<CursorStyle>`, the pointer shown over the element.
+   pub mouse_cursor:    usize,
    pub border_widths:   [usize; 4],
    pub corner_radii:    [usize; 4],
    pub padding:         [usize; 4],
@@ -1547,6 +1549,7 @@ pub(crate) fn style_from_fields(
       display: get("display")?,
       align_items: get("align_items")?,
       justify_content: get("justify_content")?,
+      mouse_cursor: get("mouse_cursor")?,
       border_widths: edges("border_widths")?,
       corner_radii: [
          get("corner_radii.top_left")?,
@@ -1577,6 +1580,7 @@ pub(crate) fn style_from_fields(
       (style.display, 1),
       (style.align_items, 1),
       (style.justify_content, 1),
+      (style.mouse_cursor, 1),
    ];
    let lengths = [
       &style.border_widths[..],

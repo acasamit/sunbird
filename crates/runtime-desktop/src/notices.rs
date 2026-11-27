@@ -56,6 +56,8 @@ const PICTURE_RADIUS: f32 = 10.0;
 const BESIDE_PICTURE: f32 = WIDTH - 24.0 - 2.0 - PICTURE - 10.0;
 
 const POSITION_ABSOLUTE: u8 = 1;
+/// `CursorStyle::PointingHand`, GPUI's sixth cursor.
+const CURSOR_POINTING_HAND: u8 = 5;
 
 /// A picture on a banner's left, like an avatar or a server icon.
 #[derive(Clone)]
@@ -271,6 +273,7 @@ fn push_close(header: RawDiv, slot: usize, id: u64) -> Option<RawDiv> {
    let mut cross = text("\u{d7}", MUTED, 16.0)?;
    gpui::style_div(&mut cross, |s| {
       s.lengths(&[s.at.padding[1], s.at.padding[3]], gpui_px(4.0));
+      s.set(s.at.mouse_cursor, CURSOR_POINTING_HAND);
    });
    if crate::modal::listen_mouse_down(&mut cross, id as *mut u8, &CLOSE_VTBL) {
       return Some(gpui::push_div(header, cross));
