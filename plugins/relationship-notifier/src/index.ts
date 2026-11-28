@@ -346,9 +346,6 @@ async function checkOffline(previous: Snapshot): Promise<void> {
 // The state each account had at the end of its last session, read before anything overwrites it.
 const previous = new Map<string, Snapshot | null>();
 const checked = new Set<string>();
-// The first version kept one snapshot for every account.
-phoenix.storage.delete("snapshot");
-phoenix.storage.delete("history");
 
 async function refresh(check: boolean): Promise<void> {
   me = plain((await phoenix.discord.me().catch(() => null))?.id) ?? me;
